@@ -1,9 +1,10 @@
 # MovieRecApp — Clean Showcase Build
 
-A local movie recommendation web app built from the ATAI chatbot project.
-This clean showcase build keeps the main conversation interface and strips out the debug pages, so it can be used as a simple proof of concept.
+A local movie recommendation app built from the Advanced Topics in Artificial Intelligence chatbot project.
 
-At runtime, the app is **graph-free**: it does **not** query `graph.nt` live. Instead, it loads prebuilt artifacts from the local `dataset/` folder and answers recommendation and factual questions from those artifacts.
+It allows the user to look up facts about a movie - who directed it, which year did the release...
+
+It also provides movie recommendations according to the movies, genre, director... a user likes.
 
 ## Menu
 
@@ -42,7 +43,6 @@ The agent uses these runtime resources:
 
 - `dataset/runtime_artifacts/`
 - `dataset/ratings/`
-- `dataset/embeddings/`
 - `dataset/titles_to_qid.json`
 
 ### 1.1 Extraction pipeline
@@ -127,8 +127,7 @@ The flow is:
    - it then keeps the top content-based candidates
    - after that, it tries a KNN refinement step over those candidates using the rating matrix
    - if KNN produces nothing, it falls back to the content-ranked list
-   - if the title-based pipeline produces nothing but liked movies exist, the agent can still fall back to the embedding recommender
-
+   
 7. **format the final reply**
    - titles are mapped back to human-readable movie names
    - for multi-movie inputs, the reply may also include a short strongest-features report based on high-scoring shared attributes
@@ -140,7 +139,6 @@ In short, the recommendation system is a **hybrid local recommender**:
 - attribute-profile scoring
 - checkbox/group filtering for entity constraints
 - KNN refinement
-- embedding fallback
 
 ### 1.3 Factual logic
 
@@ -175,7 +173,7 @@ Important runtime property:
 
 - **the app does not query the RDF graph at runtime**
 - all factual answers come from the local prebuilt artifacts and local dictionaries
-
+- This design allows the app to be uploaded in its entirety onto a remote repository and be shared. This was not previously possible due to the massive size of the RDF graph. The reduction of the overall size of the app also allows future possibility of deployment and hosting the app completely online.
 ---
 
 ## 2. Install and run
