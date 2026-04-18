@@ -1,0 +1,10 @@
+.venv
+
+*.zip
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+**/evaluation_logs/
+

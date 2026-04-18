@@ -1,0 +1,352 @@
+from modules.recommender.recommender_file_helper import RatingsFileProcessor
+from modules.title_resolver import TitleResolver
+from modules.embedding import Embedding
+from utils.message_blocks import debug_block
+from sklearn.neighbors import NearestNeighbors
+from scipy.sparse import csr_matrix
+import numpy as np
+import pandas as pd
+
+class KNNRecommender:
+    def __init__(
+        self,
+        rating_matrix: pd.DataFrame,
+        content_recommendations: list[str] | None = None,
+        n_neighbors: int = 20,
+    ):
+        """
+        rating_matrix:
+            rows   = movie_id (index)
+            cols   = user_id
+            values = centered ratings (or plain ratings)
+        """
+        # Always keep full matrix so liked movies are present
+        self.rmx = rating_matrix
+
+        # Optional candidate set for neighbors
+        self.candidate_set = set(content_recommendations) if content_recommendations is not None else None
+
+        self.movie_ids = self.rmx.index.to_numpy()
+        self.ml_csr = csr_matrix(self.rmx.values)
+
+        self.knn = NearestNeighbors(
+            metric="cosine",
+            algorithm="brute",
+            n_neighbors=n_neighbors,
+        )
+        self.knn.fit(self.ml_csr)
+
+    def recommend(self, liked_list, per_movie_neighbors: int = 5, top_k: int = 20):
+        liked_set = set(liked_list)
+        candidate_scores: dict[str, float] = {}
+
+        for movie_id in liked_list:
+            if movie_id not in self.rmx.index:
+                continue
+
+            row_idx = self.rmx.index.get_loc(movie_id)
+            distances, indices = self.knn.kneighbors(
+                self.ml_csr[row_idx],
+                n_neighbors=per_movie_neighbors + 1,
+            )
+
+            distances = distances[0]
+            indices = indices[0]
+
+            for dist, idx in zip(distances, indices):
+                neighbor_id = self.movie_ids[idx]
+
+                if neighbor_id == movie_id or neighbor_id in liked_set:
+                    continue
+
+                # NEW: restrict to candidate set if provided
+                if self.candidate_set is not None and neighbor_id not in self.candidate_set:
+                    continue
+
+                similarity = 1.0 - dist
+                candidate_scores[neighbor_id] = candidate_scores.get(neighbor_id, 0.0) + similarity
+
+        ranked = sorted(candidate_scores.items(), key=lambda x: x[1], reverse=True)
+        recommended_ids = [m_id for m_id, _ in ranked[:top_k]]
+
+        with debug_block():
+            print(f"The recommended movie id's are:\n{recommended_ids}")
+
+        return recommended_ids
+
+
+
+class KNNRecommenderDebugger:
+    """
+    This class is a debug helper for KNNRecommender.
+    """
+    def __init__(self, kr: KNNRecommender):
+        self.kr = kr
+        self.example_liked_list = [
+            "http://www.wikidata.org/entity/Q1001102",
+            "http://www.wikidata.org/entity/Q100146309 ",
+            "http://www.wikidata.org/entity/Q100148104"
+            ]
+
+    def print_debug_message(self):
+        """
+        Prints debug messages for the KNNRecommender class.
+        """
+        with debug_block():
+            print("recommendation:\n", self.kr.recommend(self.example_liked_list))
+
+class EmbeddingRecommender:
+    """
+    Provide recommendations using embedding.
+    """
+    def __init__(self, embedding: Embedding):
+        self.embedding = embedding
+        self.emb_d = self.embedding.entity_iri_to_vec
+        self.target_vector = None
+
+    def _build_target_vector(self, liked_movie_ids: list[str]):
+        """
+        Build a target vector for the liked movies:
+        look up the embedding vector for each liked movie,
+        then average them into one mean vector,
+        which will act as the target vector.
+        """
+        vectors = []
+        for qid in liked_movie_ids:
+            if qid in self.emb_d:
+                vectors.append(self.emb_d[qid])
+        with debug_block():
+            print(f" The embedding vectors corresponding to the liked movies are\n{vectors}")
+        self.target_vector = np.mean(vectors, axis=0)
+        return self.target_vector
+
+    def recommend(self, liked_movie_ids: list[str], k: int = 5):
+        """
+        Return the list of top embedding vectors that's closest to the target vector.
+        """
+        self._build_target_vector(liked_movie_ids)
+        return self.embedding.k_closest_embedding(self.target_vector, k)
+
+class EmbeddingRecommenderDebugger:
+    """
+    This class is a debug helper for EmbeddingRecommender.
+    """
+    def __init__(self, emb_r: EmbeddingRecommender):
+        self.emb_r = emb_r
+        self.example_liked_list = [
+            "http://www.wikidata.org/entity/Q927048",
+            "http://www.wikidata.org/entity/Q36479",
+            "http://www.wikidata.org/entity/Q218894",
+            ]
+
+    def print_debug_message(self):
+        """
+        Prints debug messages for the EmbeddingRecommender class.
+        """
+        with debug_block():
+            print("recommendation:\n", self.emb_r.recommend(self.example_liked_list, 10))
+
+class ContentRecommender:
+    def __init__(self, movie_attrs, rating_matrix: pd.DataFrame, attr_index=None):
+        self.m_attrs = movie_attrs
+        self.r_m = rating_matrix
+        self.attr_index = attr_index or {}
+
+    def _normalize_qid(self, qid: str) -> str:
+        # If it's a full IRI like "http://www.wikidata.org/entity/Q123",
+        # keep only the "Q123" part. Otherwise return as-is.
+        if qid.startswith("http://") or qid.startswith("https://"):
+            return qid.rstrip("/").split("/")[-1]
+        return qid
+
+    def build_preference_profile(
+        self,
+        liked_movie_list: list[str] | None,
+        entity_qids: list[str] | None = None,
+    ) -> dict[tuple[str, str], float]:
+        """
+        Build a preference profile from:
+        - liked_movie_list: movies the user likes
+        - entity_qids: explicitly mentioned entities (actors, genres, etc.)
+
+        Each appearance (either via movie attributes or via entity list)
+        adds +1 to that (attr, value) pair.
+        """
+        preference_profile: dict[tuple[str, str], float] = {}
+        liked_movie_list = liked_movie_list or []
+        entity_qids = entity_qids or []
+
+        # 1) from liked movies (same as before)
+        for qid in liked_movie_list:
+            if qid not in self.m_attrs:
+                continue
+            for attr, attr_set in self.m_attrs[qid].items():
+                for value in attr_set:
+                    key = (attr, value)
+                    preference_profile[key] = preference_profile.get(key, 0.0) + 1.0
+
+        # 2) from explicitly mentioned entities
+        # Use attr_index to find which (attr, raw_value) correspond to a given entity QID.
+        if self.attr_index and entity_qids:
+            for qid in entity_qids:
+                norm_qid = self._normalize_qid(qid)
+
+                for attr, value_to_movies in self.attr_index.items():
+                    # avoid double-counting the same raw_value for this qid+attr
+                    boosted_values = set()
+
+                    # 2a) direct key match
+                    if norm_qid in value_to_movies:
+                        boosted_values.add(norm_qid)
+                        key = (attr, norm_qid)
+                        preference_profile[key] = preference_profile.get(key, 0.0) + 1.0
+
+                    # 2b) fallback: keys may be full IRIs or other forms
+                    for raw_value in value_to_movies.keys():
+                        if raw_value in boosted_values:
+                            continue
+                        if self._normalize_qid(str(raw_value)) == norm_qid:
+                            boosted_values.add(raw_value)
+                            key = (attr, raw_value)
+                            preference_profile[key] = preference_profile.get(key, 0.0) + 1.0
+        return preference_profile
+
+
+    def recommend(
+        self,
+        liked_movie_list: list[str] | None,
+        entity_qids: list[str] | None = None,
+        limit: int = 5,
+    ):
+        """
+        1. Build preference profile from liked movies AND entities.
+        2. Score every movie by attribute overlap.
+        3. Take top content-based movies.
+        4. Try to refine with KNN; if that fails, return content-based.
+        """
+        recommendation: dict[str, float] = {}
+        preference_profile = self.build_preference_profile(liked_movie_list, entity_qids)
+
+        # if we ended up with an empty profile, just bail
+        if not preference_profile:
+            return []
+
+
+        # ---- 1) Content-based scoring ----
+        for movie_id, attrs in self.m_attrs.items():
+            score = 0.0
+
+            for group, values in attrs.items():
+                # normalize values to an iterable
+                if not isinstance(values, (set, list, tuple)):
+                    values = [values]
+
+                for v in values:
+                    score += preference_profile.get((group, v), 0.0)
+
+            # skip movies with zero score and the ones the user already likes
+            if score > 0 and movie_id not in liked_movie_list:
+                recommendation[movie_id] = score
+
+        # no matches at all → just bail
+        if not recommendation:
+            return []
+
+        # ---- 2) Top-N content-based ----
+        sorted_recommendation = sorted(
+            recommendation.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        top_movies = sorted_recommendation[:limit]
+        top_recommendation = dict(top_movies)   # {movie_id: score}
+
+        # ---- 3) Try KNN refinement on these candidates ----
+        # If you have your KNNRecommender with candidate_set support:
+        top_movie_ids = list(top_recommendation.keys())
+        knn = KNNRecommender(self.r_m, content_recommendations=top_movie_ids)
+
+        knn_recommendation = knn.recommend(liked_movie_list, top_k=limit)
+
+        # ---- 4) Fallback if KNN gives nothing ----
+        if knn_recommendation:
+            return knn_recommendation          # list of movie_ids from KNN
+        else:
+            # fall back to pure content-based ids (still list, no scores)
+            return top_movie_ids
+
+    def recommend_for_entities(self, entity_qids: list[str], limit: int = 5) -> list[str]:
+        """
+        Recommend movies that are linked to the given entities (actors, genres, etc.).
+        entity_qids are bare Q-IDs ('Q38142', 'Q33968', ...).
+        """
+        if not self.attr_index or not entity_qids:
+            return []
+
+        candidate_sets: list[set[str]] = []
+
+        # For each entity QID, find all movies that have it in *any* attribute.
+        for qid in entity_qids:
+            norm_qid = self._normalize_qid(qid)
+            movies_for_qid: set[str] = set()
+
+            for attr, value_to_movies in self.attr_index.items():
+                # 1) Try direct lookup with bare QID
+                movies = value_to_movies.get(norm_qid)
+                if movies:
+                    movies_for_qid |= set(movies)
+                    continue
+
+                # 2) Fallback: keys may be full IRIs, normalize them
+                for raw_value, raw_movies in value_to_movies.items():
+                    if self._normalize_qid(str(raw_value)) == norm_qid:
+                        movies_for_qid |= set(raw_movies)
+
+            if movies_for_qid:
+                candidate_sets.append(movies_for_qid)
+
+        if not candidate_sets:
+            return []
+
+        # AND semantics: movies that satisfy *all* constraints
+        candidates = candidate_sets[0]
+        for s in candidate_sets[1:]:
+            candidates &= s
+
+        # If intersection is empty, fall back to OR (any of the constraints)
+        if not candidates:
+            candidates = set().union(*candidate_sets)
+
+        # Rank candidates by popularity / mean rating from rating_matrix
+        scores: dict[str, float] = {}
+        for mid in candidates:
+            if mid not in self.r_m.index:
+                continue
+            row = self.r_m.loc[mid]
+            nonzero = row[row != 0]
+            if len(nonzero) == 0:
+                continue
+            scores[mid] = float(nonzero.mean())
+
+        if not scores:
+            return []
+
+        top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:limit]
+        return [mid for mid, _ in top]
+
+
+
+class ContentRecommenderDebugger:
+    def __init__(self, cr: ContentRecommender):
+        self.cr = cr
+
+    def debug(self):
+        liked_movie_list = [
+            "http://www.wikidata.org/entity/Q927048",
+            "http://www.wikidata.org/entity/Q36479",
+            "http://www.wikidata.org/entity/Q218894",
+            ]
+        with debug_block():
+            print("Content based recommendations:\n")
+            for qid, score in self.cr.recommend(liked_movie_list).items():
+                print(f"{qid}: {score}")

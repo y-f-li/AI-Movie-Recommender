@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Movie Recommender</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar">
+        <a class="brand-wrap brand-link" href="/" aria-label="Go to home page">
+          <div class="brand-icon">🎬</div>
+          <div>
+            <div class="brand-title">Movie Recommender</div>
+            <div class="brand-subtitle">Movie recommendations with reasons</div>
+          </div>
+        </a>
+        <div class="status-pill" id="statusPill">Checking backend…</div>
+      </header>
+
+      <main class="main-grid">
+        <aside class="sidebar">
+          <div class="sidebar-section-title">Starter ideas</div>
+          <button class="chip-card suggestion-btn">I like Inception and Prisoners</button>
+          <button class="chip-card suggestion-btn">Recommend me emotional sci-fi movies</button>
+          <button class="chip-card suggestion-btn">Show me movies like Her </button>
+          <button class="chip-card suggestion-btn">I want twisty psychological thrillers</button>
+          <button class="chip-card suggestion-btn">Recommend some biographical movies given that I like Meryl Streep</button>
+
+        </aside>
+
+        <section class="chat-panel">
+          <div class="chat-scroll" id="chatScroll">
+            <div class="empty-state" id="emptyState">
+              <div class="empty-icon">🔎</div>
+              <h1>Find your next movie.</h1>
+              <p>
+                start with a few movies that you like, or a genre, or a director...
+              </p>
+              <div class="hero-suggestions">
+                <button class="hero-card suggestion-btn">I like Inception and Interstellar</button>
+                <button class="hero-card suggestion-btn">Recommend me dark crime thrillers</button>
+                <button class="hero-card suggestion-btn">Who directed 10 Things I Hate About You?</button>
+                <button class="hero-card suggestion-btn">What genre is Bandit Queen?</button>
+              </div>
+            </div>
+
+            <div class="messages" id="messages"></div>
+          </div>
+
+          <div class="composer-wrap">
+            <form id="chatForm" class="composer-box">
+              <textarea id="messageInput" rows="1" placeholder="Tell me a few movies you like…"></textarea>
+              <button type="submit" id="sendButton" aria-label="Send message">↑</button>
+            </form>
+            <div class="composer-help">Enter sends. Shift + Enter adds a new line.</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>

@@ -1,0 +1,10 @@
+flask>=3.0,<4.0
+numpy
+pandas
+rdflib
+requests
+scipy
+scikit-learn
+spacy
+rapidfuzz
+nltk
